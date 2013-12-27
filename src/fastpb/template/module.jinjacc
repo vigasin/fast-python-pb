@@ -9,6 +9,14 @@
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 
 
+{% macro extendee_name(extension) -%}
+    {{ extension.extendee.split('.')[-1] }}
+{%- endmacro %}
+
+{% macro cpp_name(name) -%}
+    {{ '::'.join(name.split('.')) }}
+{%- endmacro %}
+
 {% macro cpp_type_name(field) -%}
     {{ '_'.join(field.type_name.replace('.' + moduleName + '.', '').split('.')) }}
 {%- endmacro %}
@@ -123,7 +131,7 @@ fastpb_convert{{ TYPE.ENUM }}(int value)
 namespace {
 
   // Forward-declaration for recursive structures
-  extern PyTypeObject {{ message.name }}Type;
+  extern PyTypeObject {{ message.name }}_PyType;
 
   typedef struct {
       PyObject_HEAD
@@ -197,7 +205,6 @@ namespace {
       return PyString_FromStringAndSize(result.data(), result.length());
   }
 
-
   PyObject *
   {{ message.name }}_ParseFromString({{ message.name }}* self, PyObject *value)
   {
@@ -252,7 +259,7 @@ namespace {
           google::protobuf::io::CodedInputStream::Limit messageLimit = inputStream->PushLimit(bytes);
 
           if (single == NULL) {
-            single = {{ message.name }}_new(&{{ message.name}}Type, NULL, NULL);
+            single = {{ message.name }}_new(&{{ message.name }}_PyType, NULL, NULL);
           }
 
           Py_BEGIN_ALLOW_THREADS
@@ -285,7 +292,38 @@ namespace {
           Py_RETURN_NONE;
       }
   }
+ 
+  {% for enum in message.enum_type %}
+      typedef struct {
+          PyObject_HEAD
+      } enum_{{ message.name }}_{{ enum.name }};
 
+      static PyTypeObject enum_{{ message.name }}_{{ enum.name }}Type = {
+          PyObject_HEAD_INIT(NULL)
+          0,                                      /*ob_size*/
+          "{{ moduleName }}.{{ message.name }}.{{ enum.name }}",     /*tp_name*/
+          sizeof(enum_{{ message.name }}_{{ enum.name }}),           /*tp_basicsize*/
+          0,                                      /*tp_itemsize*/
+          0,                                      /*tp_dealloc*/
+          0,                                      /*tp_print*/
+          0,                                      /*tp_getattr*/
+          0,                                      /*tp_setattr*/
+          0,                                      /*tp_compare*/
+          0,                                      /*tp_repr*/
+          0,                                      /*tp_as_number*/
+          0,                                      /*tp_as_sequence*/
+          0,                                      /*tp_as_mapping*/
+          0,                                      /*tp_hash */
+          0,                                      /*tp_call*/
+          0,                                      /*tp_str*/
+          0,                                      /*tp_getattro*/
+          0,                                      /*tp_setattro*/
+          0,                                      /*tp_as_buffer*/
+          Py_TPFLAGS_DEFAULT,                     /*tp_flags*/
+          "{{ message.name }}.{{ enum.name }} enumeration",          /* tp_doc */
+      };
+
+  {% endfor %}
 
   {% for member in message.field %}
     {% if member.type == TYPE.MESSAGE %}
@@ -293,7 +331,7 @@ namespace {
       fastpb_convert{{ message.name + member.name }}(const ::google::protobuf::Message &value)
       {
           {{ cpp_type_name(member) }} *obj = ({{ cpp_type_name(member) }} *)
-              {{ cpp_type_name(member) }}_new(&{{ cpp_type_name(member) }}Type, NULL, NULL);
+              {{ cpp_type_name(member) }}_new(&{{ cpp_type_name(member) }}_PyType, NULL, NULL);
           obj->protobuf->MergeFrom(value);
           return (PyObject *)obj;
       }
@@ -469,7 +507,7 @@ namespace {
 
       {% elif member.type == TYPE.MESSAGE %}
 
-        if (!PyType_IsSubtype(value->ob_type, &{{ cpp_type_name(member) }}Type)) {
+        if (!PyType_IsSubtype(value->ob_type, &{{ cpp_type_name(member) }}_PyType)) {
           PyErr_SetString(PyExc_TypeError,
                           "The {{ member.name }} attribute value must be an instance of {{ cpp_type_name(member) }}");
           return -1;
@@ -545,7 +583,7 @@ namespace {
   {{ message.name }}_richcompare(PyObject *self, PyObject *other, int op)
   {
       PyObject *result = NULL;
-      if (!PyType_IsSubtype(other->ob_type, &{{ message.name }}Type)) {
+      if (!PyType_IsSubtype(other->ob_type, &{{ message.name }}_PyType)) {
           result = Py_NotImplemented;
       } else {
           // This is not a particularly efficient implementation since it never short circuits, but it's better
@@ -656,7 +694,7 @@ namespace {
   };
 
 
-  PyTypeObject {{ message.name }}Type = {
+  PyTypeObject {{ message.name }}_PyType = {
       PyObject_HEAD_INIT(NULL)
       0,                                      /*ob_size*/
       "{{ moduleName }}.{{ message.name }}",  /*tp_name*/
@@ -701,9 +739,33 @@ namespace {
 
 {% endfor %}
 
+{% for message in messages %}
+  {% for extension in message.extension %}
+  PyObject *
+  {{ extendee_name(extension) }}_{{ message.name }}_GetMutableExtension(PyObject *args, {{ extendee_name(extension) }}* self)
+  {
+      {{ message.name }} *extension;
+
+      extension = ({{ message.name }} *){{ message.name }}_PyType.tp_alloc(&{{ message.name }}_PyType, 0);
+      extension->protobuf = self->protobuf->MutableExtension({{ extension.type_name.replace('.', '::') }}::{{ extension.name }});
+
+      {{ message.name }}_init(extension, NULL, NULL);
+
+      Py_INCREF(extension);
+      return (PyObject *)extension;
+  }
+  {% endfor %}
+{% endfor %}
+
 static PyMethodDef module_methods[] = {
     {NULL}  // Sentinel
 };
+
+{% for message in messages %}
+  {% for extension in message.extension %}
+        PyMethodDef {{ extendee_name(extension) }}_{{ message.name }}_Extension_def = {"Get{{ message.name }}Extension", (PyObject* (*)(PyObject*,PyObject*)){{ extendee_name(extension) }}_{{ message.name }}_GetMutableExtension, METH_O, "A new function"};
+  {% endfor %}
+{% endfor %}
 
 #ifndef PyMODINIT_FUNC	// Declarations for DLL import/export.
 #define PyMODINIT_FUNC void
@@ -714,13 +776,14 @@ init{{ packageName }}(void)
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
     PyObject* m;
+    PyObject* (*fpFunc)(PyObject*,PyObject*);
 
-    {% if enums %}
+    {# {% if enums %} #}
       PyObject *classDict;
-    {% endif %}
+    {# {% endif %} #}
 
     {% for message in messages %}
-      if (PyType_Ready(&{{ message.name }}Type) < 0)
+      if (PyType_Ready(&{{ message.name }}_PyType) < 0)
           return;
     {% endfor %}
 
@@ -746,7 +809,38 @@ init{{ packageName }}(void)
     {% endfor %}
 
     {% for message in messages %}
-      Py_INCREF(&{{ message.name }}Type);
-      PyModule_AddObject(m, "{{ message.name }}", (PyObject *)&{{ message.name }}Type);
+      Py_INCREF(&{{ message.name }}_PyType);
+      PyModule_AddObject(m, "{{ message.name }}", (PyObject *)&{{ message.name }}_PyType);
+    {% endfor %}
+    
+    {% for message in messages %}
+      Py_INCREF(&{{ message.name }}_PyType);
+      PyModule_AddObject(m, "{{ message.name }}", (PyObject *)&{{ message.name }}_PyType);
+
+      {% for enum in message.enum_type %}
+        classDict = PyDict_New();
+        {% for value in enum.value %}
+          PyDict_SetItemString(classDict, "{{ value.name }}", PyInt_FromLong({{ value.number }}));
+        {% endfor %}
+
+        enum_{{ message.name }}_{{ enum.name }}Type.tp_dict = classDict;
+        enum_{{ message.name }}_{{ enum.name }}Type.tp_new = PyType_GenericNew;
+        if (PyType_Ready(&enum_{{ message.name }}_{{ enum.name }}Type) < 0)
+          return;
+
+        PyDict_SetItemString({{ message.name }}_PyType.tp_dict, "{{ enum.name }}", (PyObject *)&enum_{{ message.name }}_{{ enum.name }}Type);
+        Py_INCREF(&enum_{{ message.name }}_{{ enum.name }}Type);
+      {% endfor %}
+
+      {% for extension in message.extension %}
+      {
+        PyMethodDef *def = &{{ extendee_name(extension) }}_{{ message.name }}_Extension_def;
+        PyObject *func = PyCFunction_New(def, NULL);
+        PyObject *method = PyMethod_New(func, NULL, (PyObject *)&{{ extendee_name(extension) }}_PyType);
+        PyDict_SetItemString({{ extendee_name(extension) }}_PyType.tp_dict, def->ml_name, method);
+        Py_DECREF(func);
+        Py_DECREF(method);
+      }
+      {% endfor %}
     {% endfor %}
 }
