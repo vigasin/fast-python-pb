@@ -159,6 +159,33 @@ namespace {
   }
 
   PyObject *
+  {{ message.name }}_GetFields({{ message.name }}* self)
+  {
+      PyObject *dict = PyDict_New();
+
+      const google::protobuf::Descriptor* descriptor = self->protobuf->GetDescriptor();
+      for (int i = 0; i < descriptor->field_count(); ++i) {
+        const google::protobuf::FieldDescriptor *field = descriptor->field(i);
+        PyObject *field_tuple = PyTuple_New(3);
+        if (field->type() == google::protobuf::FieldDescriptor::TYPE_MESSAGE) {
+          PyTuple_SetItem(field_tuple, 0, PyString_FromString(field->message_type()->full_name().c_str()));
+          PyTuple_SetItem(field_tuple, 1, Py_True);
+        } else {
+          PyTuple_SetItem(field_tuple, 0, Py_None);
+          PyTuple_SetItem(field_tuple, 1, Py_False);
+        }
+        if (field->label() == google::protobuf::FieldDescriptor::LABEL_REPEATED)
+          PyTuple_SetItem(field_tuple, 2, Py_True);
+        else
+          PyTuple_SetItem(field_tuple, 2, Py_False);
+
+        PyDict_SetItemString(dict, field->name().c_str(), field_tuple);
+      }
+
+      return dict;
+  }
+  
+  PyObject *
   {{ message.name }}_DebugString({{ message.name }}* self)
   {
       std::string result;
@@ -672,6 +699,9 @@ namespace {
 
 
   PyMethodDef {{ message.name }}_methods[] = {
+      {"GetFields", (PyCFunction){{ message.name }}_GetFields, METH_NOARGS,
+       "GetFields"
+      },
       {"DebugString", (PyCFunction){{ message.name }}_DebugString, METH_NOARGS,
        "Generates a human readable form of this message, useful for debugging and other purposes."
       },
@@ -749,7 +779,7 @@ namespace {
       extension = ({{ message.name }} *){{ message.name }}_PyType.tp_alloc(&{{ message.name }}_PyType, 0);
       extension->protobuf = self->protobuf->MutableExtension({{ extension.type_name.replace('.', '::') }}::{{ extension.name }});
 
-      {{ message.name }}_init(extension, NULL, NULL);
+      // {{ message.name }}_init(extension, NULL, NULL);
 
       Py_INCREF(extension);
       return (PyObject *)extension;
