@@ -147,6 +147,11 @@ def writeManifest(response, files):
 
 def main():
   """Main generation method."""
+  if sys.platform == "win32":
+    import os, msvcrt
+    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+
   request = plugin_pb2.CodeGeneratorRequest()
   request.ParseFromString(sys.stdin.read())
 

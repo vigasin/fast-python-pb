@@ -23,7 +23,7 @@ except ImportError:
   from distutils.core import setup
 
 setup(name='fastpb',
-      version='0.1',
+      version='0.1_optix',
       description='Fast Python Protocol Buffers',
       license='Apache',
       author='Greplin, Inc.',
